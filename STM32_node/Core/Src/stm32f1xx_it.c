@@ -22,9 +22,6 @@
 #include "stm32f1xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "FreeRTOS.h"
-#include "semphr.h"
-#include "queue.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,8 +31,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define LED_OFF 1
-#define LED_ON  0
+// #define LED_OFF 1
+// #define LED_ON  0
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -65,8 +62,8 @@ extern UART_HandleTypeDef huart1;
 extern TIM_HandleTypeDef htim1;
 
 /* USER CODE BEGIN EV */
-extern uint8_t led1State, led2State, led3State;
-extern SemaphoreHandle_t DeviceUpdateSemaphore, binSem;
+// extern uint8_t led1State, led2State, led3State;
+// extern SemaphoreHandle_t DeviceUpdateSemaphore, binSem;
 
 /* USER CODE END EV */
 
@@ -172,19 +169,15 @@ void DebugMon_Handler(void)
   * @brief This function handles EXTI line4 interrupt.
   */
 void EXTI4_IRQHandler(void)
-{
-  /* USER CODE BEGIN EXTI4_IRQn 0 */
+  {
+    /* USER CODE BEGIN EXTI4_IRQn 0 */
 
-  /* USER CODE END EXTI4_IRQn 0 */
-  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_4);
-  /* USER CODE BEGIN EXTI4_IRQn 1 */
-  // BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-  // led1State = (led1State == LED_OFF) ? LED_ON : LED_OFF;
-  // xSemaphoreGiveFromISR(binSem, &xHigherPriorityTaskWoken);
-  // portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    /* USER CODE END EXTI4_IRQn 0 */
+    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_4);
+    /* USER CODE BEGIN EXTI4_IRQn 1 */
 
-  /* USER CODE END EXTI4_IRQn 1 */
-}
+    /* USER CODE END EXTI4_IRQn 1 */
+  }
 
 /**
   * @brief This function handles DMA1 channel1 global interrupt.

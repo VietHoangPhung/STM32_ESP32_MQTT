@@ -77,9 +77,10 @@ TaskHandle_t DeviceUpdateHandler;
 /* Semaphore---------------*/
 SemaphoreHandle_t DeviceUpdateSemaphore;
 SemaphoreHandle_t binSem;
+/* Mutex ------------------*/
 
 
-uint32_t adcValues[ADC_CH_NUM];
+volatile uint32_t adcValues[ADC_CH_NUM];
 
 volatile uint8_t led1State = LED_OFF,
                  led2State = LED_OFF,
@@ -90,7 +91,7 @@ char line2Buffer[50];
 char line3Buffer[50];
 char uartBuffer[50];
 
-float temp, vSensor;
+float temp;
 
 /* USER CODE END PV */
 
@@ -104,7 +105,8 @@ static void MX_I2C1_Init(void);
 
 /* USER CODE BEGIN PFP */
 /* EXTI Callback-------------------------------------------------------------*/
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
+//void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
+void EXTI4_IRQHandler(void);
 /*Task Function declaration--------------------------------------------------*/ 
 
 void ScreenUpdate(void* parameter);
@@ -154,17 +156,13 @@ int main(void)
   /* USER CODE BEGIN 2 */
   ssd1306_Init();
   ssd1306_SetCursor(10, 10);
-  ssd1306_WriteString("adc_dma_start", Font_6x8, White);
+  ssd1306_WriteString("Starting", Font_6x8, White);
   ssd1306_UpdateScreen();
-  HAL_Delay(3000);
+  HAL_Delay(2000);
 
 
   // Start adc dma
-  HAL_ADC_Start_DMA(&hadc1, adcValues, 3);
-
-  
-  ssd1306_Fill(White);
-  ssd1306_UpdateScreen();
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 3);
 
   /* USER CODE END 2 */
 
@@ -176,6 +174,21 @@ int main(void)
   /* add semaphores, ... */
   DeviceUpdateSemaphore = xSemaphoreCreateCounting(2, 0);
   binSem = xSemaphoreCreateBinary();
+  
+  // if(binSem == NULL)
+  // {
+  //   ssd1306_SetCursor(10, 10);
+  //   ssd1306_WriteString("Failed to binSem", Font_6x8, White);
+  //   ssd1306_UpdateScreen();
+  //   HAL_Delay(2000);
+  // }
+  // else
+  // {
+  //   ssd1306_SetCursor(10, 10);
+  //   ssd1306_WriteString("Created binSem", Font_6x8, White);
+  //   ssd1306_UpdateScreen();
+  //   HAL_Delay(2000);
+  // }
   //led2Semaphore = xSemaphoreCreateBinary();
 
   /* USER CODE END RTOS_SEMAPHORES */
@@ -192,7 +205,7 @@ int main(void)
   /* definition and creation of defaultTask */
   xTaskCreate(ScreenUpdate, "Screen", 256, NULL, 2, &ScreenUpdateHandler);
   xTaskCreate(UARTUpdate,   "UART",   256, NULL, 3, &UARTUpdateHandler);
-  xTaskCreate(DeviceUpdate, "Device", 256, NULL, 4, &DeviceUpdateHandler);
+  xTaskCreate(DeviceUpdate, "Device", 256, NULL, 6, &DeviceUpdateHandler);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -208,9 +221,6 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-
-
-
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -429,7 +439,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14, LED_OFF);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14, led1State);
 
   /*Configure GPIO pins : PC13 PC14 */
   GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
@@ -445,10 +455,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI4_IRQn, 5, 0);
+  HAL_NVIC_SetPriority(EXTI4_IRQn, 6, 0);
   HAL_NVIC_EnableIRQ(EXTI4_IRQn);
 
-  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 6, 0);
   HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
@@ -457,23 +467,21 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-/* EXTI callback----------------------------------*/
+/* EXTI Callback ----------------------------------*/
+
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  // __HAL_GPIO_EXTI_CLEAR_IT(GPIO_Pin);
-  // BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
-  // if(GPIO_Pin == LED1_BTN)
-  //   led1State = (led1State == LED_ON) ? LED_OFF : LED_ON;
-  // else if(GPIO_Pin == LED2_BTN)
-  //   led2State = (led2State == LED_ON) ? LED_OFF : LED_ON;
+  if(GPIO_Pin == LED1_BTN)
+    led1State = (led1State == LED_ON) ? LED_OFF : LED_ON;
+  else if(GPIO_Pin == LED2_BTN)
+    led2State = (led2State == LED_ON) ? LED_OFF : LED_ON;
 
-  // xSemaphoreGiveFromISR(DeviceUpdateSemaphore, &xHigherPriorityTaskWoken);
-
-  // if (xHigherPriorityTaskWoken == pdTRUE)
-  // {
-  //   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-  // }
+  if(xSemaphoreGiveFromISR(DeviceUpdateSemaphore, &xHigherPriorityTaskWoken) == pdTRUE)
+  {
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+  }
 }
 
 /* Task function definition ----------------------*/
@@ -487,7 +495,11 @@ void UARTUpdate(void* parameter)
   while (1)
   {
     sprintf(uartBuffer, "%.2f/%ld/%ld/%d/%d/%d\n", temp, adcValues[1], adcValues[2], led1State, led2State, led3State);
-    HAL_UART_Transmit_IT(&huart1, (uint8_t*)uartBuffer, strlen(uartBuffer));
+  
+    if (huart1.gState == HAL_UART_STATE_READY)
+    {
+      HAL_UART_Transmit_IT(&huart1, (uint8_t*)uartBuffer, strlen(uartBuffer));
+    }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
@@ -501,11 +513,13 @@ void ScreenUpdate(void* parameter)
 {
   while (1)
   {
-    vSensor = (float)adcValues[0] * 3.3 / 4096;
+    float vSensor = (float)adcValues[0] * 3.3 / 4096;
     temp = ((1.43 - vSensor) / 0.0043) + 25;
-    sprintf(line1Buffer, "Temp: %.1f  LED1: %s", temp, (led1State == 0) ? "off" : "on");
+    sprintf(line1Buffer, "Temp: %.1f  LED1: %s", temp, (led1State == LED_OFF) ? "off" : "on");
     sprintf(line2Buffer, "CH0 : %4ld  LED2: %s", adcValues[1], (led2State == LED_OFF) ? "off" : "on");
     sprintf(line3Buffer, "CH1 : %4ld  LED3: %s", adcValues[2], (led3State == LED_OFF) ? "off" : "on");
+    //while (hi2c1.State == HAL_I2C_STATE_BUSY);
+    
     ssd1306_Fill(Black);
     ssd1306_SetCursor(1, 10);
     ssd1306_WriteString(line1Buffer, Font_6x8, White);
@@ -523,32 +537,17 @@ void ScreenUpdate(void* parameter)
 
 void DeviceUpdate(void* parameter)
 {
+  //xSemaphoreTake(binSem, portMAX_DELAY);
   while (1)
   {
-    xSemaphoreTake(binSem, portMAX_DELAY);
-    HAL_GPIO_TogglePin(LED_PORT, LED1);
+    xSemaphoreTake(DeviceUpdateSemaphore, portMAX_DELAY);
+    HAL_GPIO_WritePin(LED_PORT, LED1, led1State);
     HAL_GPIO_WritePin(LED_PORT, LED2, led2State);
   }
 }
 
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartDefaultTask */
-/**
-  * @brief  Function implementing the defaultTask thread.
-  * @param  argument: Not used
-  * @retval None
-  */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void const * argument)
-{
-  /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-  }
-  /* USER CODE END 5 */
-}
 
 /**
   * @brief  Period elapsed callback in non blocking mode
