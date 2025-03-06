@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "cmsis_os.h": "c",
+        "ssd1306.h": "c"
+    }
+}
