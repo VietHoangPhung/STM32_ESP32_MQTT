@@ -1,6 +1,8 @@
 {
     "files.associations": {
         "cmsis_os.h": "c",
-        "ssd1306.h": "c"
+        "ssd1306.h": "c",
+        "main.h": "c",
+        "stm32f1xx_hal.h": "c"
     }
 }

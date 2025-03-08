@@ -73,7 +73,7 @@ Core/Src/syscalls.c \
 Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_i2c.c \
 Core/Src/ssd1306.c \
 Core/Src/ssd1306_fonts.c \
-Core/Src/ssd1306_tests.c \
+Core/Src/tasks_functions.c
 
 
 # ASM sources

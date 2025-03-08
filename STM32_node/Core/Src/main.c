@@ -18,20 +18,11 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "FreeRTOS.h"
-#include "task.h"
-#include "timers.h"
-#include "queue.h"
-#include "semphr.h"
-#include "event_groups.h"
-
+#include "tasks_functions.h"
 #include "ssd1306.h"
-#include <stdio.h>
-#include <string.h>
 
 /* USER CODE END Includes */
 
@@ -42,16 +33,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ADC_CH_NUM  3
-#define LED_ON      0
-#define LED_OFF     1
-
-#define LED_PORT    GPIOC
-#define LED1        GPIO_PIN_13
-#define LED2        GPIO_PIN_14
-#define LED1_BTN    GPIO_PIN_4
-#define LED2_BTN    GPIO_PIN_5
-#define LED3_BTN    GPIO_PIN_6
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -68,30 +49,7 @@ I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-
-/* Tasks handler------------*/
-TaskHandle_t ScreenUpdateHandler;
-TaskHandle_t UARTUpdateHandler;
-TaskHandle_t DeviceUpdateHandler;
-
-/* Semaphore---------------*/
-SemaphoreHandle_t DeviceUpdateSemaphore;
-SemaphoreHandle_t binSem;
-/* Mutex ------------------*/
-
-
-volatile uint32_t adcValues[ADC_CH_NUM];
-
-volatile uint8_t led1State = LED_OFF,
-                 led2State = LED_OFF,
-                 led3State = LED_OFF;
-
-char line1Buffer[50];
-char line2Buffer[50];
-char line3Buffer[50];
-char uartBuffer[50];
-
-float temp;
+extern volatile uint32_t adcValues[ADC_CH_NUM];
 
 /* USER CODE END PV */
 
@@ -104,15 +62,6 @@ static void MX_USART1_UART_Init(void);
 static void MX_I2C1_Init(void);
 
 /* USER CODE BEGIN PFP */
-/* EXTI Callback-------------------------------------------------------------*/
-//void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
-void EXTI4_IRQHandler(void);
-/*Task Function declaration--------------------------------------------------*/ 
-
-void ScreenUpdate(void* parameter);
-void UARTUpdate(void* parameter);
-void DeviceUpdate(void* parameter);
-
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -155,61 +104,51 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   ssd1306_Init();
-  ssd1306_SetCursor(10, 10);
+  ssd1306_SetCursor(2, 10);
   ssd1306_WriteString("Starting", Font_6x8, White);
   ssd1306_UpdateScreen();
-  HAL_Delay(2000);
-
-
-  // Start adc dma
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 3);
-
-  /* USER CODE END 2 */
-
-  /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
-  /* USER CODE END RTOS_MUTEX */
-
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
-  DeviceUpdateSemaphore = xSemaphoreCreateCounting(2, 0);
-  binSem = xSemaphoreCreateBinary();
+  HAL_Delay(1000);
   
-  // if(binSem == NULL)
-  // {
-  //   ssd1306_SetCursor(10, 10);
-  //   ssd1306_WriteString("Failed to binSem", Font_6x8, White);
-  //   ssd1306_UpdateScreen();
-  //   HAL_Delay(2000);
-  // }
-  // else
-  // {
-  //   ssd1306_SetCursor(10, 10);
-  //   ssd1306_WriteString("Created binSem", Font_6x8, White);
-  //   ssd1306_UpdateScreen();
-  //   HAL_Delay(2000);
-  // }
-  //led2Semaphore = xSemaphoreCreateBinary();
+  /* Start ADC DMA */
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(2, 10);
+  ssd1306_WriteString("Starting ADC DMA", Font_6x8, White);
+  ssd1306_UpdateScreen();
+  HAL_Delay(1000);
+  ssd1306_SetCursor(105, 10);
+  if(HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, ADC_CH_NUM) != HAL_OK)
+  {
+    ssd1306_WriteString("failed", Font_6x8, White);
+    ssd1306_UpdateScreen();
+    Error_Handler(); 
+  }
+  else
+  {
+    ssd1306_WriteString("OK", Font_6x8, White);
+    ssd1306_UpdateScreen();
+  }
+  HAL_Delay(1000);
+  
+  /* RTOS setup */
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(2, 10);
+  ssd1306_WriteString("Setting up RTOS", Font_6x8, White);
+  ssd1306_UpdateScreen();
+  HAL_Delay(1000);
 
-  /* USER CODE END RTOS_SEMAPHORES */
-
-  /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
-  /* USER CODE END RTOS_TIMERS */
-
-  /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
-  /* USER CODE END RTOS_QUEUES */
-
-  /* Create the thread(s) */
-  /* definition and creation of defaultTask */
-  xTaskCreate(ScreenUpdate, "Screen", 256, NULL, 2, &ScreenUpdateHandler);
-  xTaskCreate(UARTUpdate,   "UART",   256, NULL, 3, &UARTUpdateHandler);
-  xTaskCreate(DeviceUpdate, "Device", 256, NULL, 6, &DeviceUpdateHandler);
-
-  /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
-  /* USER CODE END RTOS_THREADS */
+  ssd1306_SetCursor(100, 10);
+  if(!setupRTOS())
+  {
+    ssd1306_WriteString("failed", Font_6x8, White);
+    ssd1306_UpdateScreen();
+    Error_Handler();
+  }
+  else
+  {
+    ssd1306_WriteString("OK", Font_6x8, White);
+    ssd1306_UpdateScreen();
+  }
+  /* USER CODE END 2 */
 
   /* Start scheduler */
   vTaskStartScheduler();
@@ -439,7 +378,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14, led1State);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14, LED_OFF);
 
   /*Configure GPIO pins : PC13 PC14 */
   GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
@@ -466,85 +405,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
-/* EXTI Callback ----------------------------------*/
-
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-  if(GPIO_Pin == LED1_BTN)
-    led1State = (led1State == LED_ON) ? LED_OFF : LED_ON;
-  else if(GPIO_Pin == LED2_BTN)
-    led2State = (led2State == LED_ON) ? LED_OFF : LED_ON;
-
-  if(xSemaphoreGiveFromISR(DeviceUpdateSemaphore, &xHigherPriorityTaskWoken) == pdTRUE)
-  {
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-  }
-}
-
-/* Task function definition ----------------------*/
-
-/**
- * UART Update Task
- * Update every 1 second
- */
-void UARTUpdate(void* parameter)
-{
-  while (1)
-  {
-    sprintf(uartBuffer, "%.2f/%ld/%ld/%d/%d/%d\n", temp, adcValues[1], adcValues[2], led1State, led2State, led3State);
-  
-    if (huart1.gState == HAL_UART_STATE_READY)
-    {
-      HAL_UART_Transmit_IT(&huart1, (uint8_t*)uartBuffer, strlen(uartBuffer));
-    }
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-}
-
-/**
- * UART Update Task
- * Priority = 2
- * Update every 0.5 seconds
- */
-void ScreenUpdate(void* parameter)
-{
-  while (1)
-  {
-    float vSensor = (float)adcValues[0] * 3.3 / 4096;
-    temp = ((1.43 - vSensor) / 0.0043) + 25;
-    sprintf(line1Buffer, "Temp: %.1f  LED1: %s", temp, (led1State == LED_OFF) ? "off" : "on");
-    sprintf(line2Buffer, "CH0 : %4ld  LED2: %s", adcValues[1], (led2State == LED_OFF) ? "off" : "on");
-    sprintf(line3Buffer, "CH1 : %4ld  LED3: %s", adcValues[2], (led3State == LED_OFF) ? "off" : "on");
-    //while (hi2c1.State == HAL_I2C_STATE_BUSY);
-    
-    ssd1306_Fill(Black);
-    ssd1306_SetCursor(1, 10);
-    ssd1306_WriteString(line1Buffer, Font_6x8, White);
-
-    ssd1306_SetCursor(1, 30);
-    ssd1306_WriteString(line2Buffer, Font_6x8, White);
-
-    ssd1306_SetCursor(1, 50);
-    ssd1306_WriteString(line3Buffer, Font_6x8, White);
-    ssd1306_UpdateScreen();
-
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-}
-
-void DeviceUpdate(void* parameter)
-{
-  //xSemaphoreTake(binSem, portMAX_DELAY);
-  while (1)
-  {
-    xSemaphoreTake(DeviceUpdateSemaphore, portMAX_DELAY);
-    HAL_GPIO_WritePin(LED_PORT, LED1, led1State);
-    HAL_GPIO_WritePin(LED_PORT, LED2, led2State);
-  }
-}
 
 /* USER CODE END 4 */
 
