@@ -21,7 +21,7 @@
 
 /** Tasks handler------------*/
 extern TaskHandle_t ScreenUpdateHandler;
-extern TaskHandle_t UARTUpdateHandler;
+extern TaskHandle_t SensorsUpdateHandler;
 extern TaskHandle_t DeviceUpdateHandler;
 
 /**  Semaphore---------------*/
@@ -37,23 +37,23 @@ extern SemaphoreHandle_t binSem;
 uint8_t setupRTOS(void);
 
 /**
- * EXTI Callback
- */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
-
-/**
  * Screen Update Task Function
  */
 void ScreenUpdate(void* parameter);
 
 /**
- * UART Update Task Function
+ * Sensor Update Task Function
  */
-void UARTUpdate(void* parameter);
+void SensorsUpdate(void* parameter);
 
 /**
  * Device Update Task Function
  */
 void DeviceUpdate(void* parameter);
+
+/**
+ * UART Tx Task Function
+ */
+void SendData(void* parameter);
 
 #endif // TASKS_FUNCTIONS_H

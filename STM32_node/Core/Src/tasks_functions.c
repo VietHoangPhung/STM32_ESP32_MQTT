@@ -15,12 +15,19 @@
 
 /* Tasks handler------------*/
 TaskHandle_t ScreenUpdateHandler;
-TaskHandle_t UARTUpdateHandler;
+TaskHandle_t SenSorsUpdateHandler;
 TaskHandle_t DeviceUpdateHandler;
+TaskHandle_t SendDataHandler;
 
 /* Semaphore---------------*/
 SemaphoreHandle_t DeviceUpdateSemaphore;
 SemaphoreHandle_t binSem;
+
+/* Queue-------------------*/
+QueueHandle_t TxMsgQueue;
+
+/* Mutex ------------------*/
+SemaphoreHandle_t uartSemaphore;
 
 /* ADC1 CH16 (built-in temperature sensor), ADC CH0, ADC CH1*/
 volatile uint32_t adcValues[ADC_CH_NUM];
@@ -34,12 +41,12 @@ volatile uint8_t led1State = LED_OFF,
                  led3State = LED_OFF;
 
 /* Buffers used for ssd1306 display*/
-char line1Buffer[50];
-char line2Buffer[50];
-char line3Buffer[50];
+char line1Buffer[25];
+char line2Buffer[25];
+char line3Buffer[25];
 
 /* Buffers used for UART transmission*/
-char uartBuffer[50];
+char TxBuffer[20];
 
 /* UART1 Handler*/
 extern UART_HandleTypeDef huart1;
@@ -50,8 +57,12 @@ extern UART_HandleTypeDef huart1;
 /* RTOS Setup*/
 uint8_t setupRTOS(void)
 {
-     /* USER CODE BEGIN RTOS_MUTEX */
+  /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
+  uartSemaphore = xSemaphoreCreateBinary();
+  if(uartSemaphore == NULL)
+    return 0;
+  xSemaphoreGive(uartSemaphore);
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
@@ -71,15 +82,20 @@ uint8_t setupRTOS(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+  TxMsgQueue = xQueueCreate(5, sizeof(uint8_t) * 20);
+  if(TxMsgQueue == NULL)
+    return 0;
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  if(xTaskCreate(ScreenUpdate, "Screen", 256, NULL, 2, &ScreenUpdateHandler) != pdPASS)
+  if(xTaskCreate(ScreenUpdate, "Screen",    256, NULL, 1, &ScreenUpdateHandler) != pdPASS)
     return 0;
-  if(xTaskCreate(UARTUpdate,   "UART",   256, NULL, 3, &UARTUpdateHandler) != pdPASS)
+  if(xTaskCreate(SensorsUpdate,"Sensor",    256, NULL, 2, &SenSorsUpdateHandler) != pdPASS)
     return 0;
-  if(xTaskCreate(DeviceUpdate, "Device", 256, NULL, 6, &DeviceUpdateHandler) != pdPASS)
+  if(xTaskCreate(SendData,     "Send data", 256, NULL, 4, &SendDataHandler) != pdPASS)
+    return 0;
+  if(xTaskCreate(DeviceUpdate, "Device",    256, NULL, 6, &DeviceUpdateHandler) != pdPASS)
     return 0;
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -98,28 +114,37 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     led1State = (led1State == LED_ON) ? LED_OFF : LED_ON;
   else if(GPIO_Pin == LED2_BTN)
     led2State = (led2State == LED_ON) ? LED_OFF : LED_ON;
+  else if(GPIO_Pin == LED3_BTN)
+    led3State = (led3State == LED_ON) ? LED_OFF : LED_ON;
 
   if(xSemaphoreGiveFromISR(DeviceUpdateSemaphore, &xHigherPriorityTaskWoken) == pdTRUE)
-  {
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-  }
+}
+
+/* UART Rx Completion callback*/
+/**
+ * Give semaphore to ensure every transmission is properly completed
+ */
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  if(xSemaphoreGiveFromISR(uartSemaphore, &xHigherPriorityTaskWoken) == pdTRUE)
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
 /* Task function definition ----------------------*/
 
 /**
- * UART Update Task
- * Update every 1 second
+ * Sensor Update Task
+ * Continously update sensors' values every 1 second
  */
-void UARTUpdate(void* parameter)
+void SensorsUpdate(void* parameter)
 {
   while (1)
   {
-    sprintf(uartBuffer, "%.2f/%ld/%ld/%d/%d/%d\n", temp, adcValues[1], adcValues[2], led1State, led2State, led3State);
-    if (huart1.gState == HAL_UART_STATE_READY)
-    {
-      HAL_UART_Transmit_IT(&huart1, (uint8_t*)uartBuffer, strlen(uartBuffer));
-    }
+    char tempBuffer[20];
+    sprintf(tempBuffer, "%.2f/%ld/%ld\n", temp, adcValues[1], adcValues[2]);
+    xQueueSend(TxMsgQueue, tempBuffer, portMAX_DELAY);
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
@@ -127,7 +152,7 @@ void UARTUpdate(void* parameter)
 /**
  * Screen Update Task
  * Priority = 2
- * Update every 0.5 seconds
+ * Update every 0.1 seconds
  */
 void ScreenUpdate(void* parameter)
 {
@@ -167,5 +192,24 @@ void DeviceUpdate(void* parameter)
     xSemaphoreTake(DeviceUpdateSemaphore, portMAX_DELAY);
     HAL_GPIO_WritePin(LED_PORT, LED1, led1State);
     HAL_GPIO_WritePin(LED_PORT, LED2, led2State);
+    // add update request to queue
+    char tempBuffer[20];
+    sprintf(tempBuffer, "L%d%d%d\n", led1State, led2State, led3State);
+    xQueueSend(TxMsgQueue, tempBuffer, portMAX_DELAY);
+  }
+}
+
+/**
+ * UART Update Task
+ * Send the msg in queue
+ */
+void SendData(void* parameter)
+{
+  char tempBuffer1[20];
+  while(1)
+  {
+    xQueueReceive(TxMsgQueue, tempBuffer1, portMAX_DELAY);
+    xSemaphoreTake(uartSemaphore, portMAX_DELAY);
+    HAL_UART_Transmit_IT(&huart1, (uint8_t*)tempBuffer1, strlen(tempBuffer1));
   }
 }
