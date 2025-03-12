@@ -15,19 +15,14 @@
 #define LED_PORT    GPIOC
 #define LED1        GPIO_PIN_13
 #define LED2        GPIO_PIN_14
+#define LED3        GPIO_PIN_15
+
 #define LED1_BTN    GPIO_PIN_4
 #define LED2_BTN    GPIO_PIN_5
 #define LED3_BTN    GPIO_PIN_6
 
-/** Tasks handler------------*/
-extern TaskHandle_t ScreenUpdateHandler;
-extern TaskHandle_t SensorsUpdateHandler;
-extern TaskHandle_t DeviceUpdateHandler;
-
-/**  Semaphore---------------*/
-extern SemaphoreHandle_t DeviceUpdateSemaphore;
-extern SemaphoreHandle_t binSem;
-
+/* UART Rx buffer */
+extern char RxBuffer[3];
 
 
 /** Functions declaration ------*/
@@ -55,5 +50,10 @@ void DeviceUpdate(void* parameter);
  * UART Tx Task Function
  */
 void SendData(void* parameter);
+
+/** 
+ * UART Rx Task Function
+ */
+void ReceiveData(void* parameter);
 
 #endif // TASKS_FUNCTIONS_H

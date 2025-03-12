@@ -43,6 +43,8 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
+DMA_HandleTypeDef hdma_usart1_rx;
+DMA_HandleTypeDef hdma_usart1_tx;
 
 I2C_HandleTypeDef hi2c1;
 
@@ -107,14 +109,14 @@ int main(void)
   ssd1306_SetCursor(2, 10);
   ssd1306_WriteString("Starting", Font_6x8, White);
   ssd1306_UpdateScreen();
-  HAL_Delay(1000);
+  //HAL_Delay(200);
   
   /* Start ADC DMA */
   ssd1306_Fill(Black);
   ssd1306_SetCursor(2, 10);
   ssd1306_WriteString("Starting ADC DMA", Font_6x8, White);
   ssd1306_UpdateScreen();
-  HAL_Delay(1000);
+  //HAL_Delay(200);
   ssd1306_SetCursor(105, 10);
   if(HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, ADC_CH_NUM) != HAL_OK)
   {
@@ -127,14 +129,34 @@ int main(void)
     ssd1306_WriteString("OK", Font_6x8, White);
     ssd1306_UpdateScreen();
   }
-  HAL_Delay(1000);
+  //HAL_Delay(200);
+
+  /* Start UART Rx in interrupt mode*/
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(2, 10);
+  ssd1306_WriteString("Starting UART IT", Font_6x8, White);
+  ssd1306_UpdateScreen();
+  //HAL_Delay(1000);
+  ssd1306_SetCursor(105, 10);
+  if(HAL_UART_Receive_DMA(&huart1, (uint8_t*)RxBuffer, sizeof(RxBuffer)) != HAL_OK)
+  {
+    ssd1306_WriteString("failed", Font_6x8, White);
+    ssd1306_UpdateScreen();
+    Error_Handler(); 
+  }
+  else
+  {
+    ssd1306_WriteString("OK", Font_6x8, White);
+    ssd1306_UpdateScreen();
+  }
+  //HAL_Delay(1000);
   
   /* RTOS setup */
   ssd1306_Fill(Black);
   ssd1306_SetCursor(2, 10);
   ssd1306_WriteString("Setting up RTOS", Font_6x8, White);
   ssd1306_UpdateScreen();
-  HAL_Delay(1000);
+  //HAL_Delay(1000);
 
   ssd1306_SetCursor(100, 10);
   if(!setupRTOS())
@@ -358,6 +380,14 @@ static void MX_DMA_Init(void)
   HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 
+  /* DMA1_Channel4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
+
 }
 
 /**
@@ -378,10 +408,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14, LED_OFF);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, LED_OFF);
 
   /*Configure GPIO pins : PC13 PC14 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
+  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
