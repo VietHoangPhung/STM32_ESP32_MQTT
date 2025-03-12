@@ -44,9 +44,15 @@ volatile uint32_t adcValues[ADC_CH_NUM];
 volatile uint8_t led1State = LED_OFF,
                  led2State = LED_OFF,
                  led3State = LED_OFF;
+
+uint8_t lastLed1State = LED_OFF,
+        lastLed2State = LED_OFF,
+        lastLed3State = LED_OFF;
               
 /* temperature * 1000 */
 volatile uint32_t temp;
+
+volatile uint32_t lastInterruptTime;
 
 /* Buffers used for ssd1306 display*/
 char line1Buffer[26];
@@ -126,6 +132,14 @@ uint8_t setupRTOS(void)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
+  // skip some debounce trigger
+  static TickType_t lastTick = 0;
+  TickType_t currentTick = xTaskGetTickCountFromISR();
+
+  if ((currentTick - lastTick) < pdMS_TO_TICKS(20)) 
+      return;
+  lastTick = currentTick;
+
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
   // Update leds' states
@@ -186,8 +200,13 @@ void DeviceUpdate(void* parameter)
 
     HAL_GPIO_WritePin(LED_PORT, LED1, led1State);
     HAL_GPIO_WritePin(LED_PORT, LED2, led2State);
-    HAL_GPIO_WritePin(LED_PORT, LED3, led3State);
 
+    lastLed1State = led1State;
+    lastLed2State = led2State;
+    lastLed3State = led3State;
+
+
+    // Send device update to TxMsgQueue to update to ESP32
     char tempBuffer[6];
     snprintf(tempBuffer, sizeof(tempBuffer), "L%1u%1u%1u\n", led1State, led2State, led3State);
 
@@ -215,8 +234,11 @@ void ReceiveData(void* parameter)
     led2State = tempBuffer[1] - '0';  
     led3State = tempBuffer[2] - '0';
     xSemaphoreGive(LedMutex);
-
-    xSemaphoreGive(DeviceUpdateSemaphore);
+    
+    if(led1State != lastLed1State || led2State != lastLed2State || led3State != lastLed3State)
+    {
+      xSemaphoreGive(DeviceUpdateSemaphore);
+    }  
   }
 }
 
@@ -253,7 +275,7 @@ void SensorsUpdate(void* parameter)
     int32_t tempFractionalPart = (temp % 1000) / 100;
 
     char tempBuffer[20];
-    snprintf(tempBuffer, sizeof(tempBuffer), "%2ld.%1ld/%ld/%ld\n", tempIntegerPart, tempFractionalPart, adcValues[1], adcValues[2]);
+    snprintf(tempBuffer, sizeof(tempBuffer), "S%2ld.%1ld/%ld/%ld\n", tempIntegerPart, tempFractionalPart, adcValues[1], adcValues[2]);
 
     xQueueSend(TxMsgQueue, tempBuffer, portMAX_DELAY);
     vTaskDelay(delayInTicks);
