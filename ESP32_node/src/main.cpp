@@ -1,6 +1,8 @@
 #include <Arduino.h>
-#include <BluetoothSerial.h>
 #include <FreeRTOSConfig.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+// #include <BluetoothSerial.h>
 
 #define LED_OFF     1
 #define LED_ON      0
@@ -10,9 +12,15 @@
 #define BUTTON2     18
 #define BUTTON3     19
 
-#define DEBOUNCE_DELAY 200 
+#define DEBOUNCE_DELAY      200 
+#define MQTT_UPDATE_DELAY   2000      // send data to mqtt server every 2 seconds
 
 HardwareSerial toSTM32Serial(2);
+
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+
+// BluetoothSerial SerialBT;
 
 /* Tasks handlers */
 TaskHandle_t ScreenUpdateHandler;
@@ -20,6 +28,9 @@ TaskHandle_t DeviceUpdateHandler;
 TaskHandle_t SendDataHandler;
 TaskHandle_t ReceiveDataHandler;
 TaskHandle_t ButtonPollingHandler;
+//TaskHandle_t BluetoothHandler;
+TaskHandle_t MqttUpdateHandler;
+
 
 /* Rx message queue */
 QueueHandle_t RxMsgQueue;
@@ -28,16 +39,31 @@ QueueHandle_t TxMsgQueue;
 /* Semaphore */
 SemaphoreHandle_t DeviceUpdateSemaphore;
 
-/* Mutex for shared variables */
+/* Mutex */
 SemaphoreHandle_t xMutex;
+SemaphoreHandle_t serialMutex;
 
 /* Function prototypes */
 uint8_t setupRTOS(void);
+void callback(char* topic, byte* payload, unsigned int length);
+
+/* Tasks ---------------*/
 void ScreenUpdate(void* parameter);
 void DeviceUpdate(void* parameter);
 void SendData(void* parameter);
 void ReceiveData(void* parameter);
 void ButtonPolling(void* parameter);
+//void Bluetooth(void* parameter);
+void MqttUpdate(void* parameter);
+
+// MQTT broker details
+const char* mqttServer = "cd0ab787182f4d5c88b09e519a46143d.s1.eu.hivemq.cloud";  // Public broker for testing
+const int mqttPort = 8883;
+
+const char* mqttUsername = "esp32";
+const char* mqttPassword = "Esp32123";
+
+const char* mqttUpdateTopic = "esp32/update";
 
 /* Shared variables */
 volatile uint8_t led1State = LED_OFF,
@@ -52,7 +78,7 @@ char rxBuffer[32];
 uint8_t rxIndex;
 
 /* Last sent LED state */
-char lastSentLedState[4] = "000";
+char lastSentLedState[6] = "L000\n";
 
 /* UART RX Interrupt Handler */
 void IRAM_ATTR onSTM32Rx(void)
@@ -96,10 +122,12 @@ void setup()
   toSTM32Serial.setRxFIFOFull(1);
   toSTM32Serial.onReceive(onSTM32Rx);
 
+  // Connect to Wi-Fi
+
   if (!setupRTOS())
-    Serial.println("Setting up RTOS failed");
+    Serial.print("Setting up RTOS failed\n");
   else
-    Serial.println("RTOS OK");
+    Serial.print("RTOS OK");
 }
 
 void loop() 
@@ -119,7 +147,7 @@ uint8_t setupRTOS(void)
   if (RxMsgQueue == NULL)
     return 0;
 
-  TxMsgQueue = xQueueCreate(4, sizeof(char) * 5);
+  TxMsgQueue = xQueueCreate(4, sizeof(char) * 6);
   if (TxMsgQueue == NULL)
     return 0;
 
@@ -128,20 +156,30 @@ uint8_t setupRTOS(void)
   if (xMutex == NULL)
     return 0;
 
+  serialMutex = xSemaphoreCreateMutex();
+  if (serialMutex == NULL)
+    return 0;
+
   /* Create tasks */
   if (xTaskCreatePinnedToCore(ScreenUpdate, "Screen", 2048, NULL, 1, &ScreenUpdateHandler, 0) != pdPASS)
     return 0;
 
-  if(xTaskCreatePinnedToCore(DeviceUpdate,  "Device", 1024, NULL, 6, &DeviceUpdateHandler, 0) != pdPASS)
+  if(xTaskCreatePinnedToCore(DeviceUpdate,  "Device", 2048, NULL, 6, &DeviceUpdateHandler, 0) != pdPASS)
     return 0;
 
   if (xTaskCreatePinnedToCore(ReceiveData, "Receive", 4096, NULL, 5, &ReceiveDataHandler, 1) != pdPASS)
     return 0;
 
-  if (xTaskCreatePinnedToCore(SendData,     "Send",   4096, NULL, 4, &SendDataHandler, 1) != pdPASS)
+  if (xTaskCreatePinnedToCore(SendData,     "Send",   2048, NULL, 4, &SendDataHandler, 1) != pdPASS)
     return 0;
 
-  if (xTaskCreatePinnedToCore(ButtonPolling, "ButtonPoll", 4096, NULL, 2, &ButtonPollingHandler, 0) != pdPASS)
+  if (xTaskCreatePinnedToCore(ButtonPolling, "ButtonPoll", 1024, NULL, 2, &ButtonPollingHandler, 1) != pdPASS)
+    return 0;
+
+        // if (xTaskCreatePinnedToCore(Bluetooth, "Bluetooth", 10240, NULL, 3, &BluetoothHandler, 1) != pdPASS)
+        //   return 0;
+
+  if (xTaskCreatePinnedToCore(MqttUpdate, "Mqtt", 8192, NULL, 3, &MqttUpdateHandler, 0) != pdPASS)
     return 0;
 
   return 1;
@@ -158,7 +196,7 @@ void ButtonPolling(void* parameter)
     if (digitalRead(BUTTON1) == LOW && (now - lastPress1 > pdMS_TO_TICKS(DEBOUNCE_DELAY)))
     {
       xSemaphoreTake(xMutex, portMAX_DELAY);
-      led1State = !led1State;
+      led1State ^= 1;
       xSemaphoreGive(xMutex);
       lastPress1 = now;
       pressed = true;
@@ -167,7 +205,7 @@ void ButtonPolling(void* parameter)
     if (digitalRead(BUTTON2) == LOW && (now - lastPress2 > pdMS_TO_TICKS(DEBOUNCE_DELAY)))
     {
       xSemaphoreTake(xMutex, portMAX_DELAY);
-      led2State = !led2State;
+      led2State ^= 1;
       xSemaphoreGive(xMutex);
       lastPress2 = now;
       pressed = true;
@@ -176,7 +214,7 @@ void ButtonPolling(void* parameter)
     if (digitalRead(BUTTON3) == LOW && (now - lastPress3 > pdMS_TO_TICKS(DEBOUNCE_DELAY)))
     {
       xSemaphoreTake(xMutex, portMAX_DELAY);
-      led3State = !led3State;
+      led3State ^= 1;
       //digitalWrite(LED, led3State);
       xSemaphoreGive(xMutex);
       lastPress3 = now;
@@ -184,7 +222,10 @@ void ButtonPolling(void* parameter)
     }
 
     if(pressed)
+    {
+      pressed = false;
       xSemaphoreGive(DeviceUpdateSemaphore);
+    }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
@@ -196,65 +237,105 @@ void ReceiveData(void* parameter)
 
   while (1)
   {
-    if (xQueueReceive(RxMsgQueue, tempBuffer, portMAX_DELAY) == pdPASS)
-    {
+    xQueueReceive(RxMsgQueue, tempBuffer, portMAX_DELAY);
+    
       // Update LED states
-      if (tempBuffer[0] == 'L')
+    if (tempBuffer[0] == 'L')
+    {
+      xSemaphoreTake(xMutex, portMAX_DELAY);
+      led1State = tempBuffer[1] - '0';
+      led2State = tempBuffer[2] - '0';
+      led3State = tempBuffer[3] - '0';
+
+      // Ensure valid states (0 or 1)
+      led1State = (led1State == 0 || led1State == 1) ? led1State : 0;
+      led2State = (led2State == 0 || led2State == 1) ? led2State : 0;
+      led3State = (led3State == 0 || led3State == 1) ? led3State : 0;
+      //digitalWrite(LED, led3State);
+
+      xSemaphoreGive(xMutex);
+      xSemaphoreGive(DeviceUpdateSemaphore);
+      
+    }
+    // Update sensor values
+    else if (tempBuffer[0] == 'S')
+    {
+      float sensor1;
+      uint32_t sensor2, sensor3;
+
+      if (sscanf(tempBuffer + 1, "%f/%u/%u", &sensor1, &sensor2, &sensor3) == 3)
       {
-        if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
-        {
-          led1State = tempBuffer[1] - '0';
-          led2State = tempBuffer[2] - '0';
-          led3State = tempBuffer[3] - '0';
+        xSemaphoreTake(xMutex, portMAX_DELAY);
+        
+        sensorsValues[0] = (uint32_t)(sensor1 * 100);
+        sensorsValues[1] = sensor2;
+        sensorsValues[2] = sensor3;
 
-          // Ensure valid states (0 or 1)
-          led1State = (led1State == 0 || led1State == 1) ? led1State : 0;
-          led2State = (led2State == 0 || led2State == 1) ? led2State : 0;
-          led3State = (led3State == 0 || led3State == 1) ? led3State : 0;
-          digitalWrite(LED, led3State);
-
-          xSemaphoreGive(xMutex);
-        }
+        xSemaphoreGive(xMutex);
       }
-      // Update sensor values
-      else if (tempBuffer[0] == 'S')
-      {
-        float sensor1;
-        uint32_t sensor2, sensor3;
-
-        if (sscanf(tempBuffer + 1, "%f/%u/%u", &sensor1, &sensor2, &sensor3) == 3)
-        {
-          if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
-          {
-            sensorsValues[0] = (uint32_t)(sensor1 * 100);
-            sensorsValues[1] = sensor2;
-            sensorsValues[2] = sensor3;
-
-            xSemaphoreGive(xMutex);
-          }
-        }
-      }
+    }
+    // Wake-up msg, request current devices states
+    else if (tempBuffer[0] == 'W')
+    {
+      char newTx[6];
+      xSemaphoreTake(xMutex, portMAX_DELAY);
+      snprintf(newTx, sizeof(newTx), "L%d%d%d\n", led1State, led2State, led3State);
+      xSemaphoreGive(xMutex);
+      xQueueSend(TxMsgQueue, newTx, portMAX_DELAY);
     }
   }
 }
+
+            // void Bluetooth(void* parameter)
+            // {
+            //   SerialBT.begin("ESP32", 1);
+            //   TickType_t lastPrint = 0, now = 0;
+            //   char tempBuffer[32];
+            //   while(1)
+            //   {
+            //     if(SerialBT.hasClient())
+            //     {
+            //       if(SerialBT.available())
+            //       {
+            //         int len = SerialBT.readBytesUntil('\n', tempBuffer, sizeof(tempBuffer) - 1);
+            //         tempBuffer[len] = '\0'; 
+
+            //         xQueueSend(RxMsgQueue, tempBuffer, portMAX_DELAY);
+            //       }
+
+            //       now = xTaskGetTickCount();
+            //       if((now - lastPrint) > pdMS_TO_TICKS(1000))
+            //       {
+            //         xSemaphoreTake(serialMutex, portMAX_DELAY);
+            //         SerialBT.printf("L%d%d%dS%2d.%1d/%ld/%ld\n",
+            //                           led1State,
+            //                           led2State,
+            //                           led3State,
+            //                           sensorsValues[0] / 100, sensorsValues[0] % 100, 
+            //                           sensorsValues[1],
+            //                           sensorsValues[2]);
+            //         xSemaphoreGive(serialMutex);
+            //       }
+            //     }
+            //     vTaskDelay(pdMS_TO_TICKS(100));
+            //   }
+            // }
 
 /* Screen Update Task */
 void ScreenUpdate(void* parameter)
 {
   while (1)
   {
-    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
-    {
-      Serial.printf("Temp: %2d.%1d || CH1 : %ld || CH2 : %ld\nLED1 : %s || LED2 : %s || LED3 : %s\n\n\n", 
-                    sensorsValues[0] / 100, sensorsValues[0] % 100, 
-                    sensorsValues[1],
-                    sensorsValues[2],
-                    (led1State == LED_OFF) ? "off" : "on",
-                    (led2State == LED_OFF) ? "off" : "on",
-                    (led3State == LED_OFF) ? "off" : "on");
+    xSemaphoreTake(serialMutex, portMAX_DELAY);
+    Serial.printf("Temp: %2d.%1d || CH1 : %ld || CH2 : %ld\nLED1 : %d || LED2 : %d || LED3 : %d\n\n\n", 
+                  sensorsValues[0] / 100, sensorsValues[0] % 100, 
+                  sensorsValues[1],
+                  sensorsValues[2],
+                  led1State,
+                  led2State,
+                  led3State);
 
-      xSemaphoreGive(xMutex);
-    }
+    xSemaphoreGive(serialMutex);
 
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
@@ -268,13 +349,12 @@ void DeviceUpdate(void* parameter)
     xSemaphoreTake(xMutex, portMAX_DELAY);
 
     digitalWrite(LED, led3State);
-    char tempBuffer[4];
+    char tempBuffer[6];
 
-    snprintf(tempBuffer, sizeof(tempBuffer), "%d%d%d", led1State, led2State, led3State);
+    snprintf(tempBuffer, sizeof(tempBuffer), "L%d%d%d\n", led1State, led2State, led3State);
 
-    // Check if the new state is different from the last sent state
-    if (strcmp(tempBuffer, lastSentLedState) != 0) {
-      strcpy(lastSentLedState, tempBuffer); // Update the last sent state
+    if (strcmp(tempBuffer, lastSentLedState) != 0) 
+    {
       xQueueSend(TxMsgQueue, tempBuffer, portMAX_DELAY);
     }
 
@@ -284,12 +364,82 @@ void DeviceUpdate(void* parameter)
 
 void SendData(void* parameter)
 {
-  char tempBuffer[4];
+  // Send wake-up notigy to request current devices states
+  toSTM32Serial.write("W\n\n\n\n", 5);
+  char tempBuffer[6];
   while(1)
   {
-    if (xQueueReceive(TxMsgQueue, tempBuffer, portMAX_DELAY) == pdPASS)
+    xQueueReceive(TxMsgQueue, tempBuffer, portMAX_DELAY);
+    strcpy(lastSentLedState, tempBuffer);
+    toSTM32Serial.write(tempBuffer, 5);
+  }
+}
+
+void MqttUpdate(void* parameter)
+{
+  uint64_t lastUpdate = 0;
+  char mqttTxMsg[80];
+  WiFi.begin("viethoang-2.4GHz", "12345679");
+  while(1)
+  {
+    if(WiFi.status() == WL_CONNECTED)     // If wifi connected
     {
-      toSTM32Serial.write(tempBuffer, 3);
+      if(!client.connected())             // If client not connected
+      {
+        espClient.setInsecure();
+        client.setServer(mqttServer, mqttPort);
+        client.setCallback(callback);
+        Serial.print("Attempting MQTT connection...");
+        if (client.connect("ESP32Client", mqttUsername, mqttPassword)) 
+        {
+          Serial.println("connected");
+          client.subscribe("esp32/test");
+        } 
+        else 
+        {
+          Serial.print("failed, rc=");
+          Serial.print(client.state());
+          Serial.println(" try again in 5 seconds");
+          vTaskDelay(pdMS_TO_TICKS(5000));  // Delay before retrying
+        }
+      }
+      else
+      {
+        client.loop();
+        uint64_t now = millis();
+        if((now - lastUpdate) > MQTT_UPDATE_DELAY)
+        {
+          snprintf(mqttTxMsg, sizeof(mqttTxMsg), "Temp: %2d.%1d || CH1 : %ld || CH2 : %ld ||| LED1 : %s || LED2 : %s || LED3 : %s", 
+          sensorsValues[0] / 100, sensorsValues[0] % 100, 
+          sensorsValues[1],
+          sensorsValues[2],
+          (led1State == LED_OFF) ? "off" : "on",
+          (led2State == LED_OFF) ? "off" : "on",
+          (led3State == LED_OFF) ? "off" : "on");
+
+          client.publish(mqttUpdateTopic, mqttTxMsg, true);
+          lastUpdate = now;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+      }
+    }
+    else
+    {
+      WiFi.begin("viethoang-2.4GHz", "12345679");
+      vTaskDelay(pdMS_TO_TICKS(2000));
     }
   }
+}
+
+void callback(char* topic, byte* payload, unsigned int length) 
+{
+  if (strcmp(topic, "esp32/test") == 0)
+  {
+    char tempBuffer[length + 1];
+    memcpy(tempBuffer, payload, length);
+    tempBuffer[length] = '\0';
+
+    xQueueSend(RxMsgQueue, tempBuffer, portMAX_DELAY);
+  }
+  
 }
