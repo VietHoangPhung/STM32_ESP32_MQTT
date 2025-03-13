@@ -61,7 +61,7 @@ char line3Buffer[26];
 
 /* Buffers used for UART transmission*/
 char TxBuffer[20];
-char RxBuffer[3];
+char RxBuffer[5];
 
 /* UART1 Handler*/
 extern UART_HandleTypeDef huart1;
@@ -100,11 +100,11 @@ uint8_t setupRTOS(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
-  TxMsgQueue = xQueueCreate(4, sizeof(uint8_t) * 20);
+  TxMsgQueue = xQueueCreate(5, sizeof(uint8_t) * 20);
   if(TxMsgQueue == NULL)
     return 0;
 
-  RxMsgQueue = xQueueCreate(4, sizeof(uint8_t) * 4);
+  RxMsgQueue = xQueueCreate(5, sizeof(uint8_t) * 6);
   if(RxMsgQueue == NULL)
     return 0;
   /* USER CODE END RTOS_QUEUES */
@@ -144,11 +144,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
   // Update leds' states
   if(GPIO_Pin == LED1_BTN)
-    led1State = (led1State == LED_ON) ? LED_OFF : LED_ON;
+    led1State ^= 1;
   else if(GPIO_Pin == LED2_BTN)
-    led2State = (led2State == LED_ON) ? LED_OFF : LED_ON;
+    led2State ^= 1;
   else if(GPIO_Pin == LED3_BTN)
-    led3State = (led3State == LED_ON) ? LED_OFF : LED_ON;
+    led3State ^= 1;
 
   if(xSemaphoreGiveFromISR(DeviceUpdateSemaphore, &xHigherPriorityTaskWoken) == pdTRUE)
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
@@ -176,8 +176,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
   // Send a copy of RxBuffer to RxMsgQueue avoid data lost if RxBuffer
-  uint8_t tempBuffer[3];
-  memcpy(tempBuffer, RxBuffer, sizeof(tempBuffer));
+  uint8_t tempBuffer[5];
+  memcpy(tempBuffer, RxBuffer, sizeof(RxBuffer));
 
   if(xQueueSendFromISR(RxMsgQueue, tempBuffer, &xHigherPriorityTaskWoken) == pdTRUE)
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
@@ -201,14 +201,11 @@ void DeviceUpdate(void* parameter)
     HAL_GPIO_WritePin(LED_PORT, LED1, led1State);
     HAL_GPIO_WritePin(LED_PORT, LED2, led2State);
 
-    lastLed1State = led1State;
-    lastLed2State = led2State;
-    lastLed3State = led3State;
-
-
     // Send device update to TxMsgQueue to update to ESP32
     char tempBuffer[6];
-    snprintf(tempBuffer, sizeof(tempBuffer), "L%1u%1u%1u\n", led1State, led2State, led3State);
+    xSemaphoreTake(LedMutex, portMAX_DELAY);
+    snprintf(tempBuffer, sizeof(tempBuffer), "L%u%u%u\n", led1State, led2State, led3State);
+    xSemaphoreGive(LedMutex);;
 
     xQueueSend(TxMsgQueue, tempBuffer, portMAX_DELAY);
   }
@@ -221,24 +218,38 @@ void DeviceUpdate(void* parameter)
  */
 void ReceiveData(void* parameter)
 {
-  char tempBuffer[3]; 
+  char tempBuffer[5]; 
   while(1)
   {
     xQueueReceive(RxMsgQueue, tempBuffer, portMAX_DELAY);
 
-    uint8_t temp1 = 0, temp2 = 1, temp3 = 2;
-    uint8_t scanned = sscanf(tempBuffer, "%1c%1c%1c", &temp1, &temp2, &temp3);
-
-    xSemaphoreTake(LedMutex, portMAX_DELAY);
-    led1State = tempBuffer[0] - '0';
-    led2State = tempBuffer[1] - '0';  
-    led3State = tempBuffer[2] - '0';
-    xSemaphoreGive(LedMutex);
-    
-    if(led1State != lastLed1State || led2State != lastLed2State || led3State != lastLed3State)
+    // LED update RxMsg
+    if(tempBuffer[0] == 'L')
     {
-      xSemaphoreGive(DeviceUpdateSemaphore);
-    }  
+      uint8_t temp1 = 0, temp2 = 1, temp3 = 2;
+      uint8_t scanned = sscanf(tempBuffer, "L%1c%1c%1c\n", &temp1, &temp2, &temp3);
+
+      xSemaphoreTake(LedMutex, portMAX_DELAY);
+      led1State = tempBuffer[1] - '0';
+      led2State = tempBuffer[2] - '0';  
+      led3State = tempBuffer[3] - '0';
+      xSemaphoreGive(LedMutex);
+      
+      if(led1State != lastLed1State || led2State != lastLed2State || led3State != lastLed3State)
+      {
+        xSemaphoreGive(DeviceUpdateSemaphore);
+      }  
+    }
+    // Wake-up, current devices states request
+    else if(tempBuffer[0] == 'W')
+    {
+      char newTx[6];
+      xSemaphoreTake(LedMutex, portMAX_DELAY);
+      snprintf(newTx, sizeof(newTx), "L%u%u%u\n", led1State, led2State, led3State);
+      xSemaphoreGive(LedMutex);
+      xQueueSend(TxMsgQueue, newTx, portMAX_DELAY);
+
+    }
   }
 }
 
@@ -250,11 +261,19 @@ void ReceiveData(void* parameter)
  */
 void SendData(void* parameter)
 {
+  HAL_UART_Transmit_DMA(&huart1, "W\n\n\n", 4);
   char tempBuffer[20];
   while(1)
   {
     xQueueReceive(TxMsgQueue, tempBuffer, portMAX_DELAY);
     xSemaphoreTake(UartSemaphore, portMAX_DELAY);
+
+    xSemaphoreTake(LedMutex, portMAX_DELAY);
+    lastLed1State = led1State;
+    lastLed2State = led2State;
+    lastLed3State = led3State;
+    xSemaphoreGive(LedMutex);
+
     HAL_UART_Transmit_DMA(&huart1, (uint8_t*)tempBuffer, strlen(tempBuffer));
   }
 }

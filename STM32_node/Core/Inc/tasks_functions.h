@@ -22,7 +22,7 @@
 #define LED3_BTN    GPIO_PIN_6
 
 /* UART Rx buffer */
-extern char RxBuffer[3];
+extern char RxBuffer[5];
 
 
 /** Functions declaration ------*/
